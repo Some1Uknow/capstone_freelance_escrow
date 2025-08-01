@@ -11,6 +11,13 @@ pub mod capstone_freelance_escrow {
         amount: u64,
         freelancer: Pubkey,
     ) -> Result<()> {
+        let escrow = &mut ctx.accounts.escrow_account;
+        escrow.client = ctx.accounts.client.key();
+        escrow.freelancer = freelancer;
+        escrow.amount = amount;
+        escrow.status = EscrowStatus::Pending;
+        escrow.work_link = "".to_string(); // Empty initially
+        escrow.bump = *ctx.bumps.get("escrow_account").unwrap();
         Ok(())
     }
 
@@ -32,8 +39,21 @@ pub mod capstone_freelance_escrow {
 }
 
 #[derive(Accounts)]
+#[instruction(amount: u64, freelancer: Pubkey)]
 pub struct InitializeEscrow<'info> {
-    // We'll fill this later
+    #[account(mut)]
+    pub client: Signer<'info>,
+
+    #[account(
+        init,
+        payer = client,
+        space = 8 + 32 + 32 + 8 + 1 + 4 + 200 + 1,
+        seeds = [b"escrow", client.key().as_ref(), freelancer.key().as_ref()],
+        bump
+    )]
+    pub escrow_account: Account<'info, EscrowAccount>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
