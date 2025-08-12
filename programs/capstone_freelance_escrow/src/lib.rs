@@ -74,10 +74,65 @@ pub mod capstone_freelance_escrow {
     }
 
     pub fn approve_submission(ctx: Context<ApproveSubmission>) -> Result<()> {
+        // 1. Read status before mut borrow
+        let current_status = ctx.accounts.escrow_account.status.clone();
+        require!(
+            current_status == EscrowStatus::Submitted,
+            EscrowError::InvalidStatus
+        );
+
+        // 2. Mutably borrow after checks
+        let escrow = &mut ctx.accounts.escrow_account;
+
+        // 3. Update status
+        escrow.status = EscrowStatus::Approved;
+
         Ok(())
     }
 
     pub fn withdraw_payment(ctx: Context<WithdrawPayment>) -> Result<()> {
+        // ✅ 1. Read status before mut borrow
+        let current_status = ctx.accounts.escrow_account.status.clone();
+        require!(
+            current_status == EscrowStatus::Approved,
+            EscrowError::InvalidStatus
+        );
+
+        let amount = ctx.accounts.escrow_account.amount;
+        let bump = ctx.accounts.escrow_account.bump;
+        let client_key = ctx.accounts.escrow_account.client;
+        let freelancer_key = ctx.accounts.escrow_account.freelancer;
+
+        // ✅ 2. Ensure correct freelancer is withdrawing
+        require!(
+            ctx.accounts.freelancer.key() == freelancer_key,
+            EscrowError::Unauthorized
+        );
+
+        // ✅ 3. Prepare PDA seeds for signing
+        let seeds = &[
+            b"escrow",
+            client_key.as_ref(),
+            freelancer_key.as_ref(),
+            &[bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
+
+        // ✅ 4. CPI: transfer from escrow PDA → freelancer
+        let from = ctx.accounts.escrow_account.to_account_info();
+        let to = ctx.accounts.freelancer.to_account_info();
+        let system_program_ai = ctx.accounts.system_program.to_account_info();
+
+        let transfer_instruction = anchor_lang::system_program::Transfer { from, to };
+        let cpi_ctx =
+            CpiContext::new_with_signer(system_program_ai, transfer_instruction, signer_seeds);
+
+        anchor_lang::system_program::transfer(cpi_ctx, amount)?;
+
+        // ✅ 5. Update status to Complete
+        let escrow = &mut ctx.accounts.escrow_account;
+        escrow.status = EscrowStatus::Complete;
+
         Ok(())
     }
 }
@@ -126,12 +181,33 @@ pub struct SubmitWork<'info> {
     pub escrow_account: Account<'info, EscrowAccount>,
 }
 
+#[derive(Accounts)]
+pub struct ApproveSubmission<'info> {
+    #[account(mut)]
+    pub client: Signer<'info>,
+
+    #[account(
+        mut,
+        has_one = client @ EscrowError::Unauthorized
+    )]
+    pub escrow_account: Account<'info, EscrowAccount>,
+}
 
 #[derive(Accounts)]
-pub struct ApproveSubmission<'info> {}
+pub struct WithdrawPayment<'info> {
+    #[account(mut)]
+    pub freelancer: Signer<'info>,
 
-#[derive(Accounts)]
-pub struct WithdrawPayment<'info> {}
+    #[account(
+        mut,
+        has_one = freelancer @ EscrowError::Unauthorized,
+        seeds = [b"escrow", escrow_account.client.as_ref(), escrow_account.freelancer.as_ref()],
+        bump = escrow_account.bump
+    )]
+    pub escrow_account: Account<'info, EscrowAccount>,
+
+    pub system_program: Program<'info, System>,
+}
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
 pub enum EscrowStatus {
