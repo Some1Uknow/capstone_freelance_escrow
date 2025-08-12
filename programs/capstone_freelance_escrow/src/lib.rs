@@ -17,15 +17,59 @@ pub mod capstone_freelance_escrow {
         escrow.amount = amount;
         escrow.status = EscrowStatus::Pending;
         escrow.work_link = "".to_string(); // Empty initially
-        escrow.bump = *ctx.bumps.get("escrow_account").unwrap();
+        escrow.bump = ctx.bumps.escrow_account;
         Ok(())
     }
 
     pub fn deposit_funds(ctx: Context<DepositFunds>) -> Result<()> {
+        // read values first (no mutable borrow yet)
+        let escrow_amount = ctx.accounts.escrow_account.amount;
+        let escrow_status = ctx.accounts.escrow_account.status.clone(); // small clone of enum
+        let client_lamports = ctx.accounts.client.lamports();
+
+        // checks (use previously-read values)
+        require!(
+            escrow_status == EscrowStatus::Pending,
+            EscrowError::InvalidStatus
+        );
+        require!(
+            client_lamports >= escrow_amount,
+            EscrowError::InsufficientFunds
+        );
+
+        // collect AccountInfos for CPI BEFORE taking a mutable borrow
+        let from = ctx.accounts.client.to_account_info();
+        let to = ctx.accounts.escrow_account.to_account_info();
+        let system_program_ai = ctx.accounts.system_program.to_account_info();
+
+        let transfer_instruction = anchor_lang::system_program::Transfer { from, to };
+        let cpi_ctx = CpiContext::new(system_program_ai, transfer_instruction);
+        anchor_lang::system_program::transfer(cpi_ctx, escrow_amount)?;
+
+        // now mutate the escrow account safely
+        let escrow = &mut ctx.accounts.escrow_account;
+        escrow.status = EscrowStatus::Funded;
+
         Ok(())
     }
 
     pub fn submit_work(ctx: Context<SubmitWork>, work_link: String) -> Result<()> {
+        // 1. Read status before mut borrow
+        let current_status = ctx.accounts.escrow_account.status.clone();
+        require!(
+            current_status == EscrowStatus::Funded,
+            EscrowError::InvalidStatus
+        );
+
+        // 2. Mutably borrow after checks
+        let escrow = &mut ctx.accounts.escrow_account;
+
+        // 3. Store work link
+        escrow.work_link = work_link;
+
+        // 4. Update status
+        escrow.status = EscrowStatus::Submitted;
+
         Ok(())
     }
 
@@ -57,10 +101,31 @@ pub struct InitializeEscrow<'info> {
 }
 
 #[derive(Accounts)]
-pub struct DepositFunds<'info> {}
+pub struct DepositFunds<'info> {
+    #[account(mut)]
+    pub client: Signer<'info>,
+
+    #[account(
+        mut,
+        has_one = client @ EscrowError::Unauthorized,
+    )]
+    pub escrow_account: Account<'info, EscrowAccount>,
+
+    pub system_program: Program<'info, System>,
+}
 
 #[derive(Accounts)]
-pub struct SubmitWork<'info> {}
+pub struct SubmitWork<'info> {
+    #[account(mut)]
+    pub freelancer: Signer<'info>,
+
+    #[account(
+        mut,
+        has_one = freelancer @ EscrowError::Unauthorized
+    )]
+    pub escrow_account: Account<'info, EscrowAccount>,
+}
+
 
 #[derive(Accounts)]
 pub struct ApproveSubmission<'info> {}
@@ -85,4 +150,14 @@ pub struct EscrowAccount {
     pub status: EscrowStatus,
     pub work_link: String,
     pub bump: u8,
+}
+
+#[error_code]
+pub enum EscrowError {
+    #[msg("Invalid status for this action")]
+    InvalidStatus,
+    #[msg("You are not authorized to perform this action")]
+    Unauthorized,
+    #[msg("Insufficient funds to deposit")]
+    InsufficientFunds,
 }
