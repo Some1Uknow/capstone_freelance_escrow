@@ -5,15 +5,24 @@ package_manager = "npm"
 resolution = true
 skip-lint = false
 
+[programs.localnet]
+capstone_freelance_escrow = "3PWoWeSxThLbCFGxMAmSpsCqrFJJhbdrvZg4DVrPdu1y"
+
 [programs.devnet]
-capstone_freelance_escrow = "BWQvgXv2KHoSLSjLKRGR1847EijMKeQf8DUTmLWQSYvF"
+capstone_freelance_escrow = "3PWoWeSxThLbCFGxMAmSpsCqrFJJhbdrvZg4DVrPdu1y"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "devnet"
-wallet = "./wallet.json"
+cluster = "Devnet"
+wallet = "wallet.json"
 
-[scripts]
-test = "npm run test"
+[test]
+startup_wait = 5000
+shutdown_wait = 2000
+upgradeable = false
+skip_local_validator = true
+
+[test.validator]
+url = "http://127.0.0.1:8899"
