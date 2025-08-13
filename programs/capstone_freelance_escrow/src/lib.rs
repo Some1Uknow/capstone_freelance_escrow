@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkgMQhg7Wyb5J"); //  replace  later
+declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkgMQhg7Wyb5J");
 
 #[program]
 pub mod capstone_freelance_escrow {
@@ -11,12 +11,14 @@ pub mod capstone_freelance_escrow {
         amount: u64,
         freelancer: Pubkey,
     ) -> Result<()> {
+        require!(amount > 0, EscrowError::InvalidAmount);
+
         let escrow = &mut ctx.accounts.escrow_account;
         escrow.client = ctx.accounts.client.key();
         escrow.freelancer = freelancer;
         escrow.amount = amount;
         escrow.status = EscrowStatus::Pending;
-        escrow.work_link = "".to_string(); // Empty initially
+        escrow.work_link = "".to_string();
         escrow.bump = ctx.bumps.escrow_account;
         Ok(())
     }
@@ -24,7 +26,7 @@ pub mod capstone_freelance_escrow {
     pub fn deposit_funds(ctx: Context<DepositFunds>) -> Result<()> {
         // read values first (no mutable borrow yet)
         let escrow_amount = ctx.accounts.escrow_account.amount;
-        let escrow_status = ctx.accounts.escrow_account.status.clone(); // small clone of enum
+        let escrow_status = ctx.accounts.escrow_account.status;
         let client_lamports = ctx.accounts.client.lamports();
 
         // checks (use previously-read values)
@@ -32,8 +34,15 @@ pub mod capstone_freelance_escrow {
             escrow_status == EscrowStatus::Pending,
             EscrowError::InvalidStatus
         );
+
+        // Calculate rent exemption requirement
+        let rent = Rent::get()?;
+        let account_size = 8 + std::mem::size_of::<EscrowAccount>();
+        let min_rent_exempt = rent.minimum_balance(account_size);
+        let total_required = escrow_amount + min_rent_exempt;
+
         require!(
-            client_lamports >= escrow_amount,
+            client_lamports >= total_required,
             EscrowError::InsufficientFunds
         );
 
@@ -44,7 +53,7 @@ pub mod capstone_freelance_escrow {
 
         let transfer_instruction = anchor_lang::system_program::Transfer { from, to };
         let cpi_ctx = CpiContext::new(system_program_ai, transfer_instruction);
-        anchor_lang::system_program::transfer(cpi_ctx, escrow_amount)?;
+        anchor_lang::system_program::transfer(cpi_ctx, total_required)?;
 
         // now mutate the escrow account safely
         let escrow = &mut ctx.accounts.escrow_account;
@@ -54,8 +63,11 @@ pub mod capstone_freelance_escrow {
     }
 
     pub fn submit_work(ctx: Context<SubmitWork>, work_link: String) -> Result<()> {
+        require!(!work_link.is_empty(), EscrowError::InvalidWorkLink);
+        require!(work_link.len() <= 300, EscrowError::WorkLinkTooLong);
+
         // 1. Read status before mut borrow
-        let current_status = ctx.accounts.escrow_account.status.clone();
+        let current_status = ctx.accounts.escrow_account.status;
         require!(
             current_status == EscrowStatus::Funded,
             EscrowError::InvalidStatus
@@ -75,7 +87,7 @@ pub mod capstone_freelance_escrow {
 
     pub fn approve_submission(ctx: Context<ApproveSubmission>) -> Result<()> {
         // 1. Read status before mut borrow
-        let current_status = ctx.accounts.escrow_account.status.clone();
+        let current_status = ctx.accounts.escrow_account.status;
         require!(
             current_status == EscrowStatus::Submitted,
             EscrowError::InvalidStatus
@@ -92,7 +104,7 @@ pub mod capstone_freelance_escrow {
 
     pub fn withdraw_payment(ctx: Context<WithdrawPayment>) -> Result<()> {
         // ✅ 1. Read status before mut borrow
-        let current_status = ctx.accounts.escrow_account.status.clone();
+        let current_status = ctx.accounts.escrow_account.status;
         require!(
             current_status == EscrowStatus::Approved,
             EscrowError::InvalidStatus
@@ -209,7 +221,7 @@ pub struct WithdrawPayment<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, Copy)]
 pub enum EscrowStatus {
     Pending,
     Funded,
@@ -236,4 +248,10 @@ pub enum EscrowError {
     Unauthorized,
     #[msg("Insufficient funds to deposit")]
     InsufficientFunds,
+    #[msg("Invalid amount specified")]
+    InvalidAmount,
+    #[msg("Work link cannot be empty")]
+    InvalidWorkLink,
+    #[msg("Work link is too long")]
+    WorkLinkTooLong,
 }
